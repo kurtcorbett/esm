@@ -152,19 +152,287 @@ Add to your MCP config:
 | Tool | Description |
 |------|-------------|
 | `setup_schema` | Create vector indexes and constraints (idempotent) |
+| `capture` | Unified intake — auto-classifies and stores any content |
 | `create_entity` | Create typed entity nodes with auto-embedding |
 | `create_signal` | Capture observations with data + interpretation |
 | `create_session` | Start sessions with participants and scope |
 | `create_relationship` | Wire nodes together with typed edges |
-| `capture` | Unified intake — auto-classifies and stores any content |
 | `search` | Semantic search across vector indexes |
 | `get_node` | Fetch a node with all its relationships |
+| `get_context` | Reconstruct context around a topic or entity |
 | `traverse` | Multi-hop graph traversal with filters |
 | `list` | Browse nodes by type, recency, status |
-| `run_diagnostic` | Structural health checks on the graph |
 | `stats` | Summary statistics and attention items |
-| `get_context` | Reconstruct context around a topic or entity |
+| `run_diagnostic` | Structural health checks on the graph |
 | `delete_node` | Remove a node and its relationships |
+
+## Tool Reference
+
+### `setup_schema`
+
+Create vector indexes and uniqueness constraints in Neo4j. Idempotent — safe to run multiple times.
+
+**Parameters:** None
+
+```json
+{}
+```
+
+---
+
+### `capture`
+
+Unified intake — send any content and it gets classified, embedded, and stored as the appropriate node type. This is the simplest way to add data. The classifier determines the node type automatically, or you can provide hints to skip classification.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `content` | string | Yes | The content to capture — any text |
+| `hints` | object | No | `{ node_type?: string, name?: string }` — guide or skip classification |
+
+```json
+// Minimal — let the classifier decide the type
+{ "content": "We need to migrate the auth service to OAuth 2.1 before Q3" }
+
+// With hints — skip classification
+{ "content": "Kurt is the engineering manager for the platform team", "hints": { "node_type": "Agent", "name": "Kurt" } }
+```
+
+---
+
+### `create_entity`
+
+Create a typed entity node (Agent, Need, Resource, Constraint, Output, Role). Auto-generates embedding and extracts metadata via LLM. Explicit properties override LLM-extracted values.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `entity_type` | string | Yes | One of: `Agent`, `Need`, `Resource`, `Constraint`, `Output`, `Role` |
+| `name` | string | Yes | Display name for the entity |
+| `content` | string | No | Description/context — used for embedding generation |
+| `properties` | object | No | Additional properties — explicit values override LLM-extracted metadata |
+
+```json
+{ "entity_type": "Agent", "name": "Kurt", "content": "Engineering manager focused on platform infrastructure" }
+
+{ "entity_type": "Need", "name": "Auth Migration", "content": "Migrate auth service to OAuth 2.1", "properties": { "lifecycle_state": "open", "priority": "high" } }
+```
+
+---
+
+### `create_signal`
+
+Capture an observation with concrete data and optional interpretation. Auto-creates `OBSERVED_BY`, `SIGNALS`, and `PRODUCED_IN` edges when IDs are provided.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `concrete_data` | string | Yes | Observable event, metric, or behavior — factual, verifiable |
+| `interpretation` | string | No | Hypothesis about what the data means |
+| `observed_by_agent_id` | string | No | ID of the agent who captured this signal |
+| `signals_entity_id` | string | No | ID of the entity this signal is about |
+| `produced_in_session_id` | string | No | ID of the session where this was captured |
+| `properties` | object | No | Additional properties (source_type, confidence, altitude, etc.) |
+
+```json
+{
+  "concrete_data": "API latency p99 increased from 200ms to 850ms after deploy",
+  "interpretation": "The new auth middleware is adding significant overhead",
+  "signals_entity_id": "uuid-of-auth-service"
+}
+```
+
+---
+
+### `create_session`
+
+Start a session with participants, scope, and triggers. Creates `PARTICIPATES_IN`, `SCOPED_TO`, and `TRIGGERED_BY` edges.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `name` | string | Yes | Session name |
+| `content` | string | No | Session description / summary |
+| `participant_ids` | string[] | No | Agent IDs of participants |
+| `scoped_to_id` | string | No | Entity ID this session is scoped to |
+| `triggered_by_signal_ids` | string[] | No | Signal IDs that triggered this session |
+| `properties` | object | No | Additional properties (session_type, trigger_type, etc.) |
+
+```json
+{
+  "name": "Auth Migration Planning",
+  "content": "Planning session for OAuth 2.1 migration",
+  "participant_ids": ["agent-uuid-1", "agent-uuid-2"],
+  "scoped_to_id": "need-uuid",
+  "properties": { "session_type": "planning" }
+}
+```
+
+---
+
+### `create_relationship`
+
+Create any of the 21 relationship types between two nodes with optional edge properties.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `from_id` | string | Yes | Source node ID |
+| `to_id` | string | Yes | Target node ID |
+| `relationship_type` | string | Yes | One of: `PURPOSE`, `CONTAINS`, `FILLS`, `GOVERNS`, `OWNS`, `SERVES`, `GENERATED_BY`, `REQUIRES`, `PRODUCES`, `EVALUATED_AGAINST`, `HAS_STOCK`, `SIGNALS`, `OBSERVED_BY`, `FLAGGED_AT`, `PRODUCED_IN`, `PARTICIPATES_IN`, `SCOPED_TO`, `TRIGGERED_BY`, `DEFINED_BY`, `ESCALATED_TO`, `RELATED_TO` |
+| `properties` | object | No | Edge properties |
+
+```json
+{ "from_id": "agent-uuid", "to_id": "need-uuid", "relationship_type": "OWNS" }
+```
+
+---
+
+### `search`
+
+Semantic search across vector indexes. Returns results ranked by cosine similarity.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `query` | string | Yes | — | Natural language search query |
+| `index` | string | No | `"all"` | Which index: `all`, `entity`, `signal`, `session`, `discrepancy` |
+| `limit` | number | No | `10` | Max results per index |
+| `threshold` | number | No | `0.5` | Minimum similarity score (0–1) |
+
+```json
+{ "query": "authentication and authorization" }
+
+{ "query": "latency issues", "index": "signal", "limit": 5, "threshold": 0.7 }
+```
+
+---
+
+### `get_node`
+
+Fetch a node by ID with all its relationships and connected nodes.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `id` | string | Yes | Node ID (UUID) |
+
+```json
+{ "id": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+---
+
+### `get_context`
+
+Reconstruct context around a topic or entity. Returns semantic anchors, active threads, structural neighbors, attention items, and optionally discovery suggestions.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `query` | string | Yes | — | Natural language query to find relevant context |
+| `entity_id` | string | No | — | Anchor to a known entity ID instead of searching |
+| `include_discoveries` | boolean | No | `true` | Include discovery suggestions |
+
+```json
+{ "query": "what's happening with the auth migration" }
+
+{ "query": "platform team priorities", "entity_id": "agent-uuid", "include_discoveries": false }
+```
+
+---
+
+### `traverse`
+
+Multi-hop graph traversal from a starting node. Filter by relationship type(s), control depth, and direction.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `id` | string | Yes | — | Starting node ID |
+| `relationship_types` | string[] | No | all | Filter to specific relationship types |
+| `max_depth` | number | No | `3` | Maximum traversal depth (1–10) |
+| `direction` | string | No | `"both"` | `both`, `outgoing`, or `incoming` |
+
+```json
+{ "id": "agent-uuid", "relationship_types": ["OWNS", "PRODUCES"], "max_depth": 2, "direction": "outgoing" }
+```
+
+---
+
+### `list`
+
+Browse captured nodes with optional filters.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `days` | number | No | — | Only nodes from the last N days |
+| `type` | string | No | — | Filter by node label (e.g. `Signal`, `Agent`, `Need`) |
+| `status` | string | No | — | Filter by status field |
+| `limit` | number | No | `20` | Max results |
+
+```json
+{ "type": "Signal", "days": 7, "limit": 10 }
+
+{ "type": "Need", "status": "open" }
+```
+
+---
+
+### `stats`
+
+Summary statistics: node counts by type, edge counts, 7-day activity, and attention items (unprocessed signals, open needs).
+
+**Parameters:** None
+
+```json
+{}
+```
+
+---
+
+### `run_diagnostic`
+
+Structural health checks on the graph.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `checks` | string[] | No | `["all"]` | Diagnostics to run: `unattached_needs`, `missing_purpose`, `overloaded_agents`, `phantom_sessions`, `entities_without_purpose`, `unprocessed_signals`, `ego_drift_check`, `constraint_role_analysis`, `all` |
+
+```json
+{}
+
+{ "checks": ["unprocessed_signals", "unattached_needs"] }
+```
+
+---
+
+### `delete_node`
+
+Delete a node and all its relationships. Irreversible.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `id` | string | Yes | Node ID (UUID) to delete |
+
+```json
+{ "id": "550e8400-e29b-41d4-a716-446655440000" }
+```
 
 ## Security & Privacy
 
