@@ -17,6 +17,7 @@ import {
   createRelationshipQuery,
   diagnosticQueries,
   captureQuery,
+  updateNodeQuery,
   deleteNodeQuery,
   listQuery,
   statsQueries,
@@ -667,7 +668,78 @@ export function createServer(): McpServer {
     }
   );
 
-  // ─── 11. capture ────────────────────────────────────────
+  // ─── 11. update_node ─────────────────────────────────────
+
+  server.registerTool(
+    "update_node",
+    {
+      title: "Update Node",
+      description:
+        "Update properties on an existing node by ID. Merges with existing properties (does not remove unmentioned fields). Re-generates embedding if content or name changes.",
+      inputSchema: {
+        id: z.string().describe("Node ID (UUID) to update"),
+        properties: z
+          .record(z.unknown())
+          .describe(
+            "Properties to set or update. Merged with existing — only specified fields change."
+          ),
+      },
+    },
+    async ({ id, properties }) => {
+      try {
+        // Verify node exists first
+        const getQ = getNodeQuery(id);
+        const existing = await runQuery(getQ);
+
+        if (existing.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `No node found with id: ${id}` }],
+            isError: true,
+          };
+        }
+
+        const existingNode = (existing[0] as Record<string, unknown>).n as Record<string, unknown>;
+
+        // Re-generate embedding if content or name changed
+        const contentChanged = "content" in properties && properties.content !== existingNode.content;
+        const nameChanged = "name" in properties && properties.name !== existingNode.name;
+
+        const propsToSet = { ...properties };
+
+        if (contentChanged || nameChanged) {
+          const textForEmbedding =
+            (propsToSet.content as string) ||
+            (existingNode.content as string) ||
+            (propsToSet.name as string) ||
+            (existingNode.name as string) ||
+            "";
+          if (textForEmbedding) {
+            propsToSet.embedding = await getEmbedding(textForEmbedding);
+          }
+        }
+
+        // Prevent overwriting id or created_at
+        delete propsToSet.id;
+        delete propsToSet.created_at;
+
+        const query = updateNodeQuery(id, propsToSet);
+        const results = await runQuery(query);
+
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(stripEmbeddings(results[0]), null, 2) },
+          ],
+        };
+      } catch (err: unknown) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${safeErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ─── 12. capture ────────────────────────────────────────
 
   server.registerTool(
     "capture",

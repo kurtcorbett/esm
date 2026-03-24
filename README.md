@@ -164,6 +164,7 @@ Add to your MCP config:
 | `list` | Browse nodes by type, recency, status |
 | `stats` | Summary statistics and attention items |
 | `run_diagnostic` | Structural health checks on the graph |
+| `update_node` | Update properties on an existing node |
 | `delete_node` | Remove a node and its relationships |
 
 ## Tool Reference
@@ -416,6 +417,25 @@ Structural health checks on the graph.
 {}
 
 { "checks": ["unprocessed_signals", "unattached_needs"] }
+```
+
+---
+
+### `update_node`
+
+Update properties on an existing node by ID. Merges with existing properties — only specified fields change, unmentioned fields are preserved. Re-generates embedding if `content` or `name` changes. Cannot overwrite `id` or `created_at`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `id` | string | Yes | Node ID (UUID) to update |
+| `properties` | object | Yes | Properties to set or update — merged with existing |
+
+```json
+{ "id": "550e8400-e29b-41d4-a716-446655440000", "properties": { "status": "resolved_into_update" } }
+
+{ "id": "550e8400-e29b-41d4-a716-446655440000", "properties": { "name": "Updated Name", "content": "New description triggers re-embedding" } }
 ```
 
 ---

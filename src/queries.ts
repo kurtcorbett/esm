@@ -401,6 +401,25 @@ ORDER BY role_count DESC`,
   };
 }
 
+// ─── Update Node ─────────────────────────────────────────────
+
+export function updateNodeQuery(
+  nodeId: string,
+  props: Record<string, unknown>
+): CypherQuery {
+  const now = new Date().toISOString();
+  const updateProps = { ...props, updated_at: now };
+
+  // Build individual SET clauses to merge with existing properties
+  // (using $updateProps as a map and SET n += $updateProps merges non-destructively)
+  return {
+    cypher: `MATCH (n {id: $nodeId})
+SET n += $updateProps
+RETURN n, labels(n) AS types`,
+    params: { nodeId, updateProps },
+  };
+}
+
 // ─── Delete Node ─────────────────────────────────────────────
 
 export function deleteNodeQuery(nodeId: string): CypherQuery {

@@ -1,7 +1,7 @@
 // ESM — Environment variable loading
 
 export async function loadEnv(): Promise<void> {
-  if (Deno.env.get("NEO4J_DB_CONNECTION_URI")) return; // Already loaded
+  if (Deno.env.get("ESM_ENV_LOADED")) return; // Already loaded
 
   // Try project-local .env first, then ~/.config/env/esm.env
   const candidates = [
@@ -26,6 +26,7 @@ export async function loadEnv(): Promise<void> {
           Deno.env.set(match[1], value);
         }
       }
+      Deno.env.set("ESM_ENV_LOADED", "1");
       return; // Stop after first successful load
     } catch {
       // Try next candidate
