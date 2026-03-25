@@ -277,16 +277,16 @@ export function diagnosticQueries(): Record<string, CypherQuery> {
   return {
     unattached_needs: {
       cypher: `MATCH (n:Need)
-WHERE NOT ()-[:CONTAINS]->(n)
-RETURN n.id AS id, n.name AS name, 'Need has no parent role' AS finding`,
+WHERE NOT ()-[:CONTAINS]->(n) AND NOT ()-[:SCOPED_TO]->(n) AND NOT (n)-[:SCOPED_TO]->()
+RETURN n.id AS id, n.name AS name, substring(n.content, 0, 150) AS content_preview, 'Need has no parent (CONTAINS, SCOPED_TO)' AS finding`,
       params: {},
     },
 
     missing_purpose: {
       cypher: `MATCH (e:Entity)
 WHERE NOT (e)-[:PURPOSE]->()
-  AND NOT e:Stock AND NOT e:Signal AND NOT e:Session
-RETURN e.id AS id, e.name AS name, labels(e) AS types, 'Entity has no purpose edge' AS finding`,
+  AND NOT e:Stock AND NOT e:Signal AND NOT e:Session AND NOT e:Constraint
+RETURN e.id AS id, e.name AS name, labels(e) AS types, substring(e.content, 0, 150) AS content_preview, 'Entity has no outgoing purpose edge' AS finding`,
       params: {},
     },
 
@@ -312,8 +312,8 @@ RETURN s.id AS id, s.name AS name, 'Completed session with no modifications' AS 
     entities_without_purpose: {
       cypher: `MATCH (e:Entity)
 WHERE NOT (e)-[:PURPOSE]->() AND NOT (e)<-[:PURPOSE]-()
-  AND NOT e:Stock AND NOT e:Signal AND NOT e:Session
-RETURN e.id AS id, e.name AS name, labels(e) AS types, 'No purpose edges (giving or receiving)' AS finding`,
+  AND NOT e:Stock AND NOT e:Signal AND NOT e:Session AND NOT e:Constraint
+RETURN e.id AS id, e.name AS name, labels(e) AS types, substring(e.content, 0, 150) AS content_preview, 'No purpose edges (giving or receiving)' AS finding`,
       params: {},
     },
 
@@ -321,7 +321,7 @@ RETURN e.id AS id, e.name AS name, labels(e) AS types, 'No purpose edges (giving
       cypher: `MATCH (s:Signal {status: 'unprocessed'})
 OPTIONAL MATCH (s)-[:OBSERVED_BY]->(observer:Agent)
 OPTIONAL MATCH (s)-[:SIGNALS]->(target)
-RETURN s.id AS id, s.concrete_data AS data, observer.name AS observer, target.name AS target
+RETURN s.id AS id, substring(s.content, 0, 150) AS content_preview, observer.name AS observer, target.name AS target
 ORDER BY s.created_at`,
       params: {},
     },
@@ -396,6 +396,66 @@ RETURN c.id AS constraint_id, c.name AS constraint_name,
   size(roles) AS role_count,
   'Constraint flows through multiple roles — evaluate per-role impact (serves or undermines?)' AS finding
 ORDER BY role_count DESC`,
+      params: {},
+    },
+
+    // ─── New diagnostics (from Diagnostic Toolbox + Infer proactive) ───
+
+    needs_without_resources: {
+      cypher: `MATCH (n:Need)
+WHERE NOT (n)-[:REQUIRES]->(:Resource) AND NOT (:Resource)-[:SERVES]->(n)
+RETURN n.id AS id, n.name AS name, substring(n.content, 0, 150) AS content_preview,
+  n.lifecycle_state AS lifecycle_state,
+  'Need has no connected resources (REQUIRES or SERVES)' AS finding`,
+      params: {},
+    },
+
+    incomplete_purpose_edges: {
+      cypher: `MATCH (from)-[p:PURPOSE]->(to)
+WHERE p.purpose_type IS NULL
+RETURN from.id AS from_id, from.name AS from_name,
+  to.id AS to_id, to.name AS to_name,
+  'PURPOSE edge missing purpose_type (create/sustain/transform/enable)' AS finding`,
+      params: {},
+    },
+
+    hollow_middle: {
+      cypher: `MATCH (c:Constraint)
+WHERE c.constraint_type IN ['belief', 'approach']
+  AND NOT (c)-[:SERVES]->(:Constraint)
+  AND NOT (:Constraint)-[:SERVES]->(c)
+RETURN c.id AS id, c.name AS name, c.constraint_type AS constraint_type,
+  substring(c.content, 0, 150) AS content_preview,
+  'Constraint has no cross-stack SERVES edges — potential hollow middle' AS finding`,
+      params: {},
+    },
+
+    roles_without_needs: {
+      cypher: `MATCH (r:Role)
+WHERE NOT (r)<-[:FILLS]-() OR NOT EXISTS {
+  MATCH (r)<-[:SCOPED_TO|CONTAINS]-(n:Need)
+}
+WITH r, EXISTS { MATCH (r)<-[:FILLS]-() } AS has_agent
+WHERE has_agent
+RETURN r.id AS id, r.name AS name,
+  'Role has no Need children — cannot evaluate output against expectations' AS finding`,
+      params: {},
+    },
+
+    relationships_without_purpose: {
+      cypher: `MATCH (a:Agent)-[:FILLS]->(r:Role)
+WHERE NOT (r)-[:PURPOSE]->()
+RETURN r.id AS role_id, r.name AS role_name,
+  a.id AS agent_id, a.name AS agent_name,
+  'Role filled by agent but has no PURPOSE edge — undeclared purpose' AS finding`,
+      params: {},
+    },
+
+    depleting_stocks_without_signals: {
+      cypher: `MATCH (s:Stock {trend: 'depleting'})
+WHERE NOT (:Signal)-[:SIGNALS]->(s) AND NOT (s)<-[:SIGNALS]-(:Signal)
+RETURN s.id AS id, s.name AS name, s.level AS level,
+  'Stock depleting with no connected signals explaining cause' AS finding`,
       params: {},
     },
   };

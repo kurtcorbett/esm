@@ -5,6 +5,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "https://deno.l
 import {
   captureQuery,
   deleteNodeQuery,
+  diagnosticQueries,
   listQuery,
   statsQueries,
   schemaSetupQueries,
@@ -230,4 +231,75 @@ Deno.test("structuralNeighborsQuery — 2-hop traversal with projected fields", 
   // Verify projection excludes embedding
   assertStringIncludes(q.cypher, ".id, .name,");
   assertEquals(q.cypher.includes(".embedding"), false);
+});
+
+// ─── diagnosticQueries ──────────────────────────────────────
+
+Deno.test("diagnosticQueries — returns all 14 expected diagnostics", () => {
+  const q = diagnosticQueries();
+  const keys = Object.keys(q);
+  assertEquals(keys.length, 14);
+  // Original 8
+  assertEquals(keys.includes("unattached_needs"), true);
+  assertEquals(keys.includes("missing_purpose"), true);
+  assertEquals(keys.includes("overloaded_agents"), true);
+  assertEquals(keys.includes("phantom_sessions"), true);
+  assertEquals(keys.includes("entities_without_purpose"), true);
+  assertEquals(keys.includes("unprocessed_signals"), true);
+  assertEquals(keys.includes("ego_drift_check"), true);
+  assertEquals(keys.includes("constraint_role_analysis"), true);
+  // New 6
+  assertEquals(keys.includes("needs_without_resources"), true);
+  assertEquals(keys.includes("incomplete_purpose_edges"), true);
+  assertEquals(keys.includes("hollow_middle"), true);
+  assertEquals(keys.includes("roles_without_needs"), true);
+  assertEquals(keys.includes("relationships_without_purpose"), true);
+  assertEquals(keys.includes("depleting_stocks_without_signals"), true);
+});
+
+Deno.test("diagnosticQueries — improved diagnostics include content_preview", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.unattached_needs.cypher, "content_preview");
+  assertStringIncludes(q.missing_purpose.cypher, "content_preview");
+  assertStringIncludes(q.entities_without_purpose.cypher, "content_preview");
+  assertStringIncludes(q.unprocessed_signals.cypher, "content_preview");
+});
+
+Deno.test("diagnosticQueries — content_preview uses substring(0, 150)", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.unattached_needs.cypher, "substring(n.content, 0, 150)");
+  assertStringIncludes(q.needs_without_resources.cypher, "substring(n.content, 0, 150)");
+});
+
+Deno.test("diagnosticQueries — missing_purpose excludes Constraint nodes", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.missing_purpose.cypher, "NOT e:Constraint");
+});
+
+Deno.test("diagnosticQueries — entities_without_purpose excludes Constraint nodes", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.entities_without_purpose.cypher, "NOT e:Constraint");
+});
+
+Deno.test("diagnosticQueries — unattached_needs checks SCOPED_TO in both directions", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.unattached_needs.cypher, "SCOPED_TO");
+});
+
+Deno.test("diagnosticQueries — hollow_middle checks belief and approach constraints", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.hollow_middle.cypher, "belief");
+  assertStringIncludes(q.hollow_middle.cypher, "approach");
+  assertStringIncludes(q.hollow_middle.cypher, "SERVES");
+});
+
+Deno.test("diagnosticQueries — incomplete_purpose_edges checks purpose_type", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.incomplete_purpose_edges.cypher, "purpose_type IS NULL");
+});
+
+Deno.test("diagnosticQueries — depleting_stocks checks for missing signals", () => {
+  const q = diagnosticQueries();
+  assertStringIncludes(q.depleting_stocks_without_signals.cypher, "depleting");
+  assertStringIncludes(q.depleting_stocks_without_signals.cypher, "SIGNALS");
 });
