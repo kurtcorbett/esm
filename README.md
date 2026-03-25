@@ -225,23 +225,23 @@ Create a typed entity node (Agent, Need, Resource, Constraint, Output, Role). Au
 
 ### `create_signal`
 
-Capture an observation with concrete data and optional interpretation. Auto-creates `OBSERVED_BY`, `SIGNALS`, and `PRODUCED_IN` edges when IDs are provided.
+Capture an observation with optional context. Auto-creates `OBSERVED_BY`, `SIGNALS`, and `PRODUCED_IN` edges when IDs are provided. Observer-authored fields (`observation`, `context`, `how_observed`, `confidence`, `perceived_impact`) are sacred — never overwritten by the system.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `concrete_data` | string | Yes | Observable event, metric, or behavior — factual, verifiable |
-| `interpretation` | string | No | Hypothesis about what the data means |
+| `observation` | string | Yes | What happened, from the observer's vantage point — factual, verifiable |
+| `context` | string | No | Observer-authored situational context, circumstances, or hypotheses |
 | `observed_by_agent_id` | string | No | ID of the agent who captured this signal |
 | `signals_entity_id` | string | No | ID of the entity this signal is about |
 | `produced_in_session_id` | string | No | ID of the session where this was captured |
-| `properties` | object | No | Additional properties (source_type, confidence, altitude, etc.) |
+| `properties` | object | No | Additional properties (how_observed, confidence, perceived_impact, disposition, disposition_note, etc.) |
 
 ```json
 {
-  "concrete_data": "API latency p99 increased from 200ms to 850ms after deploy",
-  "interpretation": "The new auth middleware is adding significant overhead",
+  "observation": "API latency p99 increased from 200ms to 850ms after deploy",
+  "context": "The new auth middleware was deployed 2 hours ago, latency started climbing immediately",
   "signals_entity_id": "uuid-of-auth-service"
 }
 ```

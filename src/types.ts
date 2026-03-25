@@ -118,13 +118,17 @@ export interface StockNode extends BaseNode {
 }
 
 export interface SignalNode extends BaseNode, EmbeddableNode {
-  concrete_data: string;
-  interpretation?: string;
+  observation: string;
+  context?: string;
+  system_interpretation?: string;
   content: string;
-  source_type?: "direct_observation" | "reported" | "inferred" | "environmental";
+  how_observed?: "direct_observation" | "reported" | "inferred" | "environmental";
   confidence?: "high" | "medium" | "low";
-  altitude?: "purpose" | "priority" | "belief" | "approach" | "structure";
+  perceived_impact?: "high" | "medium" | "low";
+  structural_impact?: number;
   status: "unprocessed" | "needs_classification" | "under_review" | "resolved_into_update" | "dismissed";
+  disposition?: "redundant" | "additive" | "contradictory" | "unrelated";
+  disposition_note?: string;
 }
 
 export interface DiscrepancyNode extends BaseNode, EmbeddableNode {

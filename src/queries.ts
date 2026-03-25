@@ -715,7 +715,7 @@ AND EXISTS {
   WHERE e.id IN $entityIds
 }
 OPTIONAL MATCH (s)-[:OBSERVED_BY]->(observer)
-RETURN s { .id, concrete_data: left(s.concrete_data, 200), interpretation: left(s.interpretation, 200), .confidence, .status, .created_at } AS signal,
+RETURN s { .id, observation: left(COALESCE(s.observation, s.concrete_data), 200), context: left(COALESCE(s.context, s.interpretation), 200), .confidence, .status, .created_at } AS signal,
   observer.name AS observer_name`,
     params: { entityIds },
   };
@@ -730,7 +730,7 @@ WITH [s IN raw_stocks WHERE s IS NOT NULL] AS stocks
 OPTIONAL MATCH (sig:Signal)
 WHERE sig.status IN ['unprocessed', 'needs_classification']
   AND sig.created_at < $staleThreshold
-WITH stocks, collect(DISTINCT CASE WHEN sig IS NOT NULL THEN {type: 'stale_signal', id: sig.id, data: left(sig.concrete_data, 200), created_at: sig.created_at} END) AS raw_stale
+WITH stocks, collect(DISTINCT CASE WHEN sig IS NOT NULL THEN {type: 'stale_signal', id: sig.id, data: left(COALESCE(sig.observation, sig.concrete_data), 200), created_at: sig.created_at} END) AS raw_stale
 WITH stocks, [s IN raw_stale WHERE s IS NOT NULL] AS stale
 RETURN stocks + stale AS attention_items`,
     params: {

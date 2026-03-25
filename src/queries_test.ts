@@ -55,14 +55,14 @@ Deno.test("captureQuery — Need gets Entity:Artifact:Need label", () => {
 });
 
 Deno.test("captureQuery — Signal type creates Signal node", () => {
-  const q = captureQuery("Signal", { concrete_data: "test" }, false);
+  const q = captureQuery("Signal", { observation: "test" }, false);
   assertStringIncludes(q.cypher, "CREATE (n:Signal");
   const props = q.params.props as Record<string, unknown>;
   assertEquals(props.status, "unprocessed");
 });
 
 Deno.test("captureQuery — unclassified sets needs_classification status", () => {
-  const q = captureQuery("Signal", { concrete_data: "test" }, true);
+  const q = captureQuery("Signal", { observation: "test" }, true);
   const props = q.params.props as Record<string, unknown>;
   assertEquals(props.status, "needs_classification");
 });
@@ -106,7 +106,7 @@ Deno.test("captureQuery — all node types get id and created_at", () => {
 });
 
 Deno.test("captureQuery — explicit props not overwritten", () => {
-  const q = captureQuery("Signal", { concrete_data: "x", status: "under_review" }, false);
+  const q = captureQuery("Signal", { observation: "x", status: "under_review" }, false);
   const props = q.params.props as Record<string, unknown>;
   assertEquals(props.status, "under_review");
 });
@@ -211,10 +211,10 @@ Deno.test("unprocessedSignalsForEntitiesQuery — includes both unprocessed stat
   assertStringIncludes(q.cypher, "needs_classification");
 });
 
-Deno.test("unprocessedSignalsForEntitiesQuery — truncates text fields", () => {
+Deno.test("unprocessedSignalsForEntitiesQuery — truncates text fields with v1/v2 compat", () => {
   const q = unprocessedSignalsForEntitiesQuery(testIds);
-  assertStringIncludes(q.cypher, "left(s.concrete_data, 200)");
-  assertStringIncludes(q.cypher, "left(s.interpretation, 200)");
+  assertStringIncludes(q.cypher, "COALESCE(s.observation, s.concrete_data)");
+  assertStringIncludes(q.cypher, "COALESCE(s.context, s.interpretation)");
 });
 
 Deno.test("attentionItemsQuery — checks depleting stocks and stale signals", () => {

@@ -183,15 +183,15 @@ export function createServer(): McpServer {
     {
       title: "Create Signal",
       description:
-        "Capture an observation with concrete_data + interpretation. Auto-creates OBSERVED_BY and optional SIGNALS + PRODUCED_IN edges in one transaction.",
+        "Capture an observation with optional context. Auto-creates OBSERVED_BY and optional SIGNALS + PRODUCED_IN edges in one transaction. Observer-authored fields (observation, context, how_observed, confidence, perceived_impact) are sacred — never overwritten by the system.",
       inputSchema: {
-        concrete_data: z
+        observation: z
           .string()
-          .describe("Observable event, metric, or behavior — factual, verifiable"),
-        interpretation: z
+          .describe("What happened, from the observer's vantage point — factual, verifiable"),
+        context: z
           .string()
           .optional()
-          .describe("Hypothesis about what the data means"),
+          .describe("Observer-authored situational context, circumstances, or hypotheses"),
         observed_by_agent_id: z
           .string()
           .optional()
@@ -207,21 +207,21 @@ export function createServer(): McpServer {
         properties: z
           .record(z.unknown())
           .optional()
-          .describe("Additional properties (source_type, confidence, altitude, etc.)"),
+          .describe("Additional properties (how_observed, confidence, perceived_impact, disposition, disposition_note, etc.)"),
       },
     },
     async ({
-      concrete_data,
-      interpretation,
+      observation,
+      context,
       observed_by_agent_id,
       signals_entity_id,
       produced_in_session_id,
       properties,
     }) => {
       try {
-        const combinedText = interpretation
-          ? `${concrete_data}\n\nInterpretation: ${interpretation}`
-          : concrete_data;
+        const combinedText = context
+          ? `${observation}\n\nContext: ${context}`
+          : observation;
 
         const [embedding, extracted] = await Promise.all([
           getEmbedding(combinedText),
@@ -230,8 +230,8 @@ export function createServer(): McpServer {
 
         const mergedProps = {
           ...extracted,
-          concrete_data,
-          ...(interpretation && { interpretation }),
+          observation,
+          ...(context && { context }),
           content: combinedText,
           embedding,
           ...(properties || {}),

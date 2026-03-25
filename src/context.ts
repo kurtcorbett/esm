@@ -105,7 +105,7 @@ export async function buildContext(
         return {
           id: node.id,
           type: "structural_proximity",
-          name: node.name || node.concrete_data,
+          name: node.name || node.observation || node.concrete_data,
           score: r.score,
           note: "Structurally connected to anchor but semantically distant from query",
         };
