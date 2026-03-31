@@ -2,7 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "npm:zod@3";
-import { runQuery } from "./db.ts";
+import { runQuery, runInTransaction } from "./db.ts";
 import { getEmbedding, extractMetadata, getLlmConfig } from "./llm.ts";
 import { classifyContent } from "./classify.ts";
 import { buildContext } from "./context.ts";
@@ -21,13 +21,15 @@ import {
   deleteNodeQuery,
   listQuery,
   statsQueries,
+  batchCreateRelationshipsQuery,
+  processingSummaryQuery,
 } from "./queries.ts";
 import {
   ENTITY_LABELS,
   RELATIONSHIP_TYPES,
   VECTOR_INDEXES,
 } from "./types.ts";
-import type { NodeLabel } from "./types.ts";
+import type { NodeLabel, CypherQuery } from "./types.ts";
 
 /** Log full error to stderr and return a sanitized message for MCP clients. */
 function safeErrorMessage(err: unknown): string {
@@ -59,6 +61,58 @@ function stripEmbeddings(obj: unknown): unknown {
     return out;
   }
   return obj;
+}
+
+/** Parse JSON string or pass-through object for optional properties fields. */
+const propertiesSchema = (description: string) =>
+  z.preprocess(
+    (val) => (typeof val === "string" ? JSON.parse(val) : val),
+    z.record(z.unknown()).optional()
+  ).describe(description);
+
+/** Parse JSON string or pass-through object for required properties fields. */
+const requiredPropertiesSchema = (description: string) =>
+  z.preprocess(
+    (val) => (typeof val === "string" ? JSON.parse(val) : val),
+    z.record(z.unknown())
+  ).describe(description);
+
+/** Reduce a node to compact fields for summary views. */
+function compactNode(node: Record<string, unknown>): Record<string, unknown> {
+  const compact: Record<string, unknown> = {};
+  for (const key of ["id", "name", "labels", "status", "created_at"]) {
+    if (node[key] !== undefined) compact[key] = node[key];
+  }
+  if (typeof node.content === "string") {
+    compact.content = node.content.length > 200
+      ? node.content.slice(0, 200) + "..."
+      : node.content;
+  }
+  if (typeof node.observation === "string") {
+    compact.observation = node.observation.length > 200
+      ? node.observation.slice(0, 200) + "..."
+      : node.observation;
+  }
+  return compact;
+}
+
+/** Reduce a relationship to compact fields. */
+function compactRelationship(rel: Record<string, unknown>): Record<string, unknown> {
+  return { type: rel.type };
+}
+
+/** Compact a full path object (from traverse). */
+function compactPath(path: Record<string, unknown>): Record<string, unknown> {
+  const segments = path.segments as Array<Record<string, unknown>> | undefined;
+  return {
+    start: compactNode(path.start as Record<string, unknown>),
+    end: compactNode(path.end as Record<string, unknown>),
+    segments: segments?.map((seg) => ({
+      start: compactNode(seg.start as Record<string, unknown>),
+      relationship: compactRelationship(seg.relationship as Record<string, unknown>),
+      end: compactNode(seg.end as Record<string, unknown>),
+    })),
+  };
 }
 
 export function createServer(): McpServer {
@@ -128,10 +182,7 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("Description/context — used for embedding generation"),
-        properties: z
-          .record(z.unknown())
-          .optional()
-          .describe(
+        properties: propertiesSchema(
             "Additional properties. Explicit values override LLM-extracted metadata."
           ),
       },
@@ -204,10 +255,7 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("ID of the session where this was captured"),
-        properties: z
-          .record(z.unknown())
-          .optional()
-          .describe("Additional properties (how_observed, confidence, perceived_impact, disposition, disposition_note, etc.)"),
+        properties: propertiesSchema("Additional properties (how_observed, confidence, perceived_impact, disposition, disposition_note, etc.)"),
       },
     },
     async ({
@@ -285,10 +333,7 @@ export function createServer(): McpServer {
           .array(z.string())
           .optional()
           .describe("Signal IDs that triggered this session"),
-        properties: z
-          .record(z.unknown())
-          .optional()
-          .describe(
+        properties: propertiesSchema(
             "Additional properties (session_type, trigger_type, scope_description, etc.)"
           ),
       },
@@ -471,9 +516,14 @@ export function createServer(): McpServer {
           .optional()
           .default("both")
           .describe("Edge direction: both (default), outgoing, or incoming"),
+        compact: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Return compact summaries (id, name, labels, status, truncated content) instead of full nodes"),
       },
     },
-    async ({ id, relationship_types, max_depth, direction }) => {
+    async ({ id, relationship_types, max_depth, direction, compact }) => {
       try {
         const query = traverseQuery(id, relationship_types, max_depth, direction);
         const results = await runQuery(query);
@@ -486,8 +536,17 @@ export function createServer(): McpServer {
           };
         }
 
+        const cleaned = stripEmbeddings(results) as unknown[];
+        const output = compact
+          ? cleaned.map((item) => {
+              const row = item as Record<string, unknown>;
+              const path = row.path as Record<string, unknown> | undefined;
+              return path ? compactPath(path) : row;
+            })
+          : cleaned;
+
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(stripEmbeddings(results), null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
         };
       } catch (err: unknown) {
         return {
@@ -505,17 +564,14 @@ export function createServer(): McpServer {
     {
       title: "Create Relationship",
       description:
-        "Create any of the 21 relationship types between two nodes with optional edge properties.",
+        "Create any of the 23 relationship types between two nodes with optional edge properties.",
       inputSchema: {
         from_id: z.string().describe("Source node ID"),
         to_id: z.string().describe("Target node ID"),
         relationship_type: z
           .enum(RELATIONSHIP_TYPES)
           .describe("Relationship type to create"),
-        properties: z
-          .record(z.unknown())
-          .optional()
-          .describe(
+        properties: propertiesSchema(
             "Edge properties (e.g. purpose_type, trust, cost for PURPOSE edges)"
           ),
       },
@@ -580,6 +636,13 @@ export function createServer(): McpServer {
               "unprocessed_signals",
               "ego_drift_check",
               "constraint_role_analysis",
+              "needs_without_resources",
+              "incomplete_purpose_edges",
+              "hollow_middle",
+              "roles_without_needs",
+              "relationships_without_purpose",
+              "depleting_stocks_without_signals",
+              "content_children_coherence",
               "all",
             ])
           )
@@ -606,7 +669,7 @@ export function createServer(): McpServer {
         const summary =
           Object.keys(findings).length === 0
             ? "No structural issues found."
-            : JSON.stringify(findings, null, 2);
+            : JSON.stringify(stripEmbeddings(findings), null, 2);
 
         return {
           content: [{ type: "text" as const, text: summary }],
@@ -678,9 +741,7 @@ export function createServer(): McpServer {
         "Update properties on an existing node by ID. Merges with existing properties (does not remove unmentioned fields). Re-generates embedding if content or name changes.",
       inputSchema: {
         id: z.string().describe("Node ID (UUID) to update"),
-        properties: z
-          .record(z.unknown())
-          .describe(
+        properties: requiredPropertiesSchema(
             "Properties to set or update. Merged with existing — only specified fields change."
           ),
       },
@@ -823,20 +884,32 @@ export function createServer(): McpServer {
         type: z.string().optional().describe("Filter by node label (e.g. Signal, Agent, Need)"),
         status: z.string().optional().describe("Filter by status field"),
         limit: z.number().optional().default(20).describe("Max results (default 20)"),
+        compact: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Return compact summaries (id, name, labels, status, created_at, truncated content)"),
       },
     },
-    async ({ days, type, status, limit }) => {
+    async ({ days, type, status, limit, compact }) => {
       try {
-        const query = listQuery({ days, type, status, limit });
+        const query = listQuery({ days, type, status, limit, compact });
         const results = await runQuery(query);
         const cleaned = stripEmbeddings(results) as unknown[];
+
+        const output = compact
+          ? cleaned.map((row) => {
+              const r = row as Record<string, unknown>;
+              return { ...compactNode(r.n as Record<string, unknown>), types: r.types };
+            })
+          : cleaned;
 
         return {
           content: [
             {
               type: "text" as const,
-              text: cleaned.length > 0
-                ? JSON.stringify(cleaned, null, 2)
+              text: output.length > 0
+                ? JSON.stringify(output, null, 2)
                 : "No nodes found.",
             },
           ],
@@ -936,6 +1009,202 @@ export function createServer(): McpServer {
           content: [
             { type: "text" as const, text: JSON.stringify(cleaned, null, 2) },
           ],
+        };
+      } catch (err: unknown) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${safeErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ─── 15. batch_update_nodes ────────────────────────────────
+
+  server.registerTool(
+    "batch_update_nodes",
+    {
+      title: "Batch Update Nodes",
+      description:
+        "Update properties on multiple nodes in a single transaction. Re-generates embeddings for nodes where content or name changes. Max 50 nodes per call.",
+      inputSchema: {
+        updates: z.array(
+          z.object({
+            id: z.string().describe("Node ID (UUID) to update"),
+            properties: requiredPropertiesSchema(
+              "Properties to set or update. Merged with existing."
+            ),
+          })
+        ).max(50).describe("Array of node updates (max 50)"),
+      },
+    },
+    async ({ updates }) => {
+      try {
+        if (updates.length === 0) {
+          return { content: [{ type: "text" as const, text: "No updates provided." }] };
+        }
+
+        // Fetch all existing nodes
+        const existingResults = await Promise.all(
+          updates.map((u) => runQuery(getNodeQuery(u.id)))
+        );
+
+        const missing = updates.filter((_, i) => existingResults[i].length === 0);
+        if (missing.length > 0) {
+          return {
+            content: [{ type: "text" as const, text: `Nodes not found: ${missing.map((m) => m.id).join(", ")}` }],
+            isError: true,
+          };
+        }
+
+        // Determine which need re-embedding
+        const embeddingPromises: Array<Promise<number[]> | null> = [];
+        for (let i = 0; i < updates.length; i++) {
+          const props = updates[i].properties as Record<string, unknown>;
+          const existing = (existingResults[i][0] as Record<string, unknown>).n as Record<string, unknown>;
+          const contentChanged = "content" in props && props.content !== existing.content;
+          const nameChanged = "name" in props && props.name !== existing.name;
+
+          if (contentChanged || nameChanged) {
+            const text = (props.content as string) || (existing.content as string) ||
+                         (props.name as string) || (existing.name as string) || "";
+            embeddingPromises.push(text ? getEmbedding(text) : null);
+          } else {
+            embeddingPromises.push(null);
+          }
+        }
+
+        const embeddings = await Promise.all(
+          embeddingPromises.map((p) => p ?? Promise.resolve(null))
+        );
+
+        // Build update queries
+        const queries: CypherQuery[] = updates.map((u, i) => {
+          const propsToSet = { ...u.properties as Record<string, unknown> };
+          if (embeddings[i]) propsToSet.embedding = embeddings[i];
+          delete propsToSet.id;
+          delete propsToSet.created_at;
+          return updateNodeQuery(u.id, propsToSet);
+        });
+
+        // Execute in single transaction
+        const results = await runInTransaction(queries);
+
+        const summaries = results.map((rows) => {
+          if (rows.length === 0) return { id: "unknown", name: "unknown" };
+          const row = rows[0] as Record<string, unknown>;
+          const n = row.n as Record<string, unknown>;
+          return { id: n?.id, name: n?.name, status: n?.status };
+        });
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ updated: summaries.length, nodes: summaries }, null, 2) }],
+        };
+      } catch (err: unknown) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${safeErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ─── 16. batch_create_relationships ───────────────────────
+
+  server.registerTool(
+    "batch_create_relationships",
+    {
+      title: "Batch Create Relationships",
+      description:
+        "Create multiple relationships in a single transaction. Max 50 per call.",
+      inputSchema: {
+        relationships: z.array(
+          z.object({
+            from_id: z.string().describe("Source node ID"),
+            to_id: z.string().describe("Target node ID"),
+            relationship_type: z.enum(RELATIONSHIP_TYPES).describe("Relationship type"),
+            properties: propertiesSchema("Optional edge properties"),
+          })
+        ).max(50).describe("Array of relationships to create (max 50)"),
+      },
+    },
+    async ({ relationships }) => {
+      try {
+        if (relationships.length === 0) {
+          return { content: [{ type: "text" as const, text: "No relationships provided." }] };
+        }
+
+        const queries = batchCreateRelationshipsQuery(
+          relationships.map((r) => ({
+            from_id: r.from_id,
+            to_id: r.to_id,
+            relationship_type: r.relationship_type,
+            properties: r.properties as Record<string, unknown> | undefined,
+          }))
+        );
+
+        const results = await runInTransaction(queries);
+        const created = results.filter((r) => r.length > 0).length;
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ created, total_requested: relationships.length }, null, 2) }],
+        };
+      } catch (err: unknown) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${safeErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ─── 17. processing_summary ──────────────────────────────
+
+  server.registerTool(
+    "processing_summary",
+    {
+      title: "Processing Summary",
+      description:
+        "Summarize signal processing status: counts by status (resolved, dismissed, under_review, unprocessed) and disposition (additive, redundant, contradictory, unrelated). Optionally scoped to a session.",
+      inputSchema: {
+        session_id: z
+          .string()
+          .optional()
+          .describe("Session ID to scope summary to (via PRODUCED_IN edge). Omit for all signals."),
+      },
+    },
+    async ({ session_id }) => {
+      try {
+        const query = processingSummaryQuery(session_id);
+        const results = await runQuery(query);
+
+        if (results.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "No signals found." }],
+          };
+        }
+
+        const row = results[0] as Record<string, number>;
+        const summary = {
+          total_signals: row.total,
+          by_status: {
+            resolved_into_update: row.resolved,
+            dismissed: row.dismissed,
+            under_review: row.under_review,
+            unprocessed: row.unprocessed,
+          },
+          by_disposition: {
+            additive: row.additive,
+            redundant: row.redundant,
+            contradictory: row.contradictory,
+            unrelated: row.unrelated,
+            no_disposition: row.no_disposition,
+          },
+          ...(session_id && { session_id }),
+        };
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }],
         };
       } catch (err: unknown) {
         return {

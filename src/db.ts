@@ -69,12 +69,47 @@ export async function runQueryRaw(query: CypherQuery) {
   }
 }
 
+/**
+ * Execute multiple queries in a single managed write transaction.
+ * If any query fails, the entire transaction is rolled back.
+ */
+export async function runInTransaction<T = Record<string, unknown>>(
+  queries: CypherQuery[]
+): Promise<T[][]> {
+  const d = await ensureConnected();
+  const session: Session = d.session();
+  try {
+    return await session.executeWrite(async (tx) => {
+      const allResults: T[][] = [];
+      for (const query of queries) {
+        const result = await tx.run(query.cypher, query.params);
+        allResults.push(
+          result.records.map((record) => {
+            const obj: Record<string, unknown> = {};
+            for (const key of record.keys) {
+              obj[key as string] = toPlain(record.get(key as string));
+            }
+            return obj as T;
+          })
+        );
+      }
+      return allResults;
+    });
+  } finally {
+    await session.close();
+  }
+}
+
 export async function closeDriver(): Promise<void> {
   if (driver) {
     await driver.close();
     driver = null;
   }
 }
+
+// Properties to exclude from all node/relationship serialization.
+// Embeddings are large (1536 floats ~15KB) and never needed in MCP responses.
+const SKIP_PROPERTIES = new Set(["embedding"]);
 
 // Convert Neo4j types to plain JS objects
 // deno-lint-ignore no-explicit-any
@@ -90,7 +125,9 @@ function toPlain(value: any): unknown {
       id: toPlain(value.properties.id),
       labels: value.labels,
       ...Object.fromEntries(
-        Object.entries(value.properties).map(([k, v]) => [k, toPlain(v)])
+        Object.entries(value.properties)
+          .filter(([k]) => !SKIP_PROPERTIES.has(k))
+          .map(([k, v]) => [k, toPlain(v)])
       ),
     };
   }
@@ -100,7 +137,9 @@ function toPlain(value: any): unknown {
     return {
       type: value.type,
       ...Object.fromEntries(
-        Object.entries(value.properties).map(([k, v]) => [k, toPlain(v)])
+        Object.entries(value.properties)
+          .filter(([k]) => !SKIP_PROPERTIES.has(k))
+          .map(([k, v]) => [k, toPlain(v)])
       ),
     };
   }

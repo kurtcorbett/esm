@@ -14,6 +14,8 @@ import {
   unprocessedSignalsForEntitiesQuery,
   attentionItemsQuery,
   structuralNeighborsQuery,
+  batchCreateRelationshipsQuery,
+  processingSummaryQuery,
 } from "./queries.ts";
 
 // ─── schemaSetupQueries ──────────────────────────────────────
@@ -235,10 +237,10 @@ Deno.test("structuralNeighborsQuery — 2-hop traversal with projected fields", 
 
 // ─── diagnosticQueries ──────────────────────────────────────
 
-Deno.test("diagnosticQueries — returns all 14 expected diagnostics", () => {
+Deno.test("diagnosticQueries — returns all 15 expected diagnostics", () => {
   const q = diagnosticQueries();
   const keys = Object.keys(q);
-  assertEquals(keys.length, 14);
+  assertEquals(keys.length, 15);
   // Original 8
   assertEquals(keys.includes("unattached_needs"), true);
   assertEquals(keys.includes("missing_purpose"), true);
@@ -248,13 +250,14 @@ Deno.test("diagnosticQueries — returns all 14 expected diagnostics", () => {
   assertEquals(keys.includes("unprocessed_signals"), true);
   assertEquals(keys.includes("ego_drift_check"), true);
   assertEquals(keys.includes("constraint_role_analysis"), true);
-  // New 6
+  // New 7
   assertEquals(keys.includes("needs_without_resources"), true);
   assertEquals(keys.includes("incomplete_purpose_edges"), true);
   assertEquals(keys.includes("hollow_middle"), true);
   assertEquals(keys.includes("roles_without_needs"), true);
   assertEquals(keys.includes("relationships_without_purpose"), true);
   assertEquals(keys.includes("depleting_stocks_without_signals"), true);
+  assertEquals(keys.includes("content_children_coherence"), true);
 });
 
 Deno.test("diagnosticQueries — improved diagnostics include content_preview", () => {
@@ -302,4 +305,67 @@ Deno.test("diagnosticQueries — depleting_stocks checks for missing signals", (
   const q = diagnosticQueries();
   assertStringIncludes(q.depleting_stocks_without_signals.cypher, "depleting");
   assertStringIncludes(q.depleting_stocks_without_signals.cypher, "SIGNALS");
+});
+
+// ─── listQuery compact mode ───────────────────────────────────
+
+Deno.test("listQuery — compact mode uses field projection", () => {
+  const q = listQuery({ compact: true });
+  assertStringIncludes(q.cypher, "n{.id, .name, .status, .created_at");
+  assertStringIncludes(q.cypher, "left(n.content, 200)");
+});
+
+Deno.test("listQuery — non-compact mode returns full node", () => {
+  const q = listQuery({ compact: false });
+  assertStringIncludes(q.cypher, "RETURN n, labels(n)");
+});
+
+// ─── batchCreateRelationshipsQuery ────────────────────────────
+
+Deno.test("batchCreateRelationshipsQuery — generates one query per relationship", () => {
+  const queries = batchCreateRelationshipsQuery([
+    { from_id: "a", to_id: "b", relationship_type: "SERVES" },
+    { from_id: "c", to_id: "d", relationship_type: "CONTAINS", properties: { order: 1 } },
+  ]);
+  assertEquals(queries.length, 2);
+  assertStringIncludes(queries[0].cypher, "SERVES");
+  assertStringIncludes(queries[1].cypher, "CONTAINS");
+  assertStringIncludes(queries[1].cypher, "$relProps");
+});
+
+Deno.test("batchCreateRelationshipsQuery — rejects invalid relationship type", () => {
+  assertThrows(
+    () => batchCreateRelationshipsQuery([{ from_id: "a", to_id: "b", relationship_type: "DROP DATABASE" }]),
+    Error,
+    "Invalid relationship type"
+  );
+});
+
+Deno.test("batchCreateRelationshipsQuery — empty array returns empty", () => {
+  const queries = batchCreateRelationshipsQuery([]);
+  assertEquals(queries.length, 0);
+});
+
+// ─── processingSummaryQuery ───────────────────────────────────
+
+Deno.test("processingSummaryQuery — scoped to session uses PRODUCED_IN", () => {
+  const q = processingSummaryQuery("session-123");
+  assertStringIncludes(q.cypher, "PRODUCED_IN");
+  assertStringIncludes(q.cypher, "$sessionId");
+  assertEquals(q.params.sessionId, "session-123");
+});
+
+Deno.test("processingSummaryQuery — unscoped matches all signals", () => {
+  const q = processingSummaryQuery();
+  assertStringIncludes(q.cypher, "MATCH (s:Signal)");
+  assertEquals(q.cypher.includes("PRODUCED_IN"), false);
+  assertEquals(Object.keys(q.params).length, 0);
+});
+
+Deno.test("processingSummaryQuery — returns all disposition counts", () => {
+  const q = processingSummaryQuery();
+  assertStringIncludes(q.cypher, "additive");
+  assertStringIncludes(q.cypher, "redundant");
+  assertStringIncludes(q.cypher, "contradictory");
+  assertStringIncludes(q.cypher, "unrelated");
 });

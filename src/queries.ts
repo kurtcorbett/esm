@@ -458,6 +458,24 @@ RETURN s.id AS id, s.name AS name, s.level AS level,
   'Stock depleting with no connected signals explaining cause' AS finding`,
       params: {},
     },
+
+    content_children_coherence: {
+      cypher: `MATCH (parent:Entity)
+WHERE parent.content IS NOT NULL AND size(parent.content) > 200
+OPTIONAL MATCH (parent)-[:CONTAINS]->(child)
+WITH parent, count(child) AS child_count, labels(parent) AS types
+WHERE child_count > 0
+OPTIONAL MATCH (parent)-[:CONTAINS]->(c)
+WITH parent, child_count, types,
+  max(c.updated_at) AS latest_child_update
+WHERE parent.updated_at < latest_child_update
+RETURN parent.id AS id, parent.name AS name, types,
+  child_count,
+  parent.updated_at AS parent_updated,
+  latest_child_update AS child_updated,
+  'Parent content may be stale — children updated more recently than parent narrative' AS finding`,
+      params: {},
+    },
   };
 }
 
@@ -582,8 +600,9 @@ export function listQuery(filters: {
   type?: string;
   status?: string;
   limit?: number;
+  compact?: boolean;
 }): CypherQuery {
-  const { days, type, status, limit = 20 } = filters;
+  const { days, type, status, limit = 20, compact = false } = filters;
   const where: string[] = [];
   const params: Record<string, unknown> = { limit: Math.floor(limit) };
 
@@ -612,10 +631,14 @@ export function listQuery(filters: {
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
 
+  const returnClause = compact
+    ? `RETURN n{.id, .name, .status, .created_at, content: left(n.content, 200)} AS n, labels(n) AS types`
+    : `RETURN n, labels(n) AS types`;
+
   return {
     cypher: `${matchClause}
 ${whereClause}
-RETURN n, labels(n) AS types
+${returnClause}
 ORDER BY n.created_at DESC
 LIMIT toInteger($limit)`,
     params,
@@ -752,5 +775,61 @@ RETURN connected { .id, .name, content: left(connected.content, 200), .status, .
   types, via_relationships
 LIMIT 30`,
     params: { entityIds },
+  };
+}
+
+// ─── Batch Create Relationships ──────────────────────────────
+
+export function batchCreateRelationshipsQuery(
+  relationships: Array<{
+    from_id: string;
+    to_id: string;
+    relationship_type: string;
+    properties?: Record<string, unknown>;
+  }>
+): CypherQuery[] {
+  return relationships.map((rel) => {
+    const relType = rel.relationship_type;
+    if (!/^[A-Z_]+$/.test(relType)) {
+      throw new Error(`Invalid relationship type: ${relType}`);
+    }
+    const hasProps = rel.properties && Object.keys(rel.properties).length > 0;
+    return {
+      cypher: `MATCH (from {id: $fromId}), (to {id: $toId})
+CREATE (from)-[r:${relType}${hasProps ? " $relProps" : ""}]->(to)
+RETURN from.id AS from_id, to.id AS to_id, type(r) AS type`,
+      params: {
+        fromId: rel.from_id,
+        toId: rel.to_id,
+        ...(hasProps && { relProps: rel.properties }),
+      },
+    };
+  });
+}
+
+// ─── Processing Summary ──────────────────────────────────────
+
+export function processingSummaryQuery(sessionId?: string): CypherQuery {
+  const sessionMatch = sessionId
+    ? `MATCH (s:Signal)-[:PRODUCED_IN]->(session:Session {id: $sessionId})`
+    : `MATCH (s:Signal)`;
+
+  return {
+    cypher: `${sessionMatch}
+WITH collect(s) AS signals, count(s) AS total
+UNWIND signals AS s
+WITH total,
+  count(CASE WHEN s.status = 'resolved_into_update' THEN 1 END) AS resolved,
+  count(CASE WHEN s.status = 'dismissed' THEN 1 END) AS dismissed,
+  count(CASE WHEN s.status = 'under_review' THEN 1 END) AS under_review,
+  count(CASE WHEN s.status IN ['unprocessed', 'needs_classification'] THEN 1 END) AS unprocessed,
+  count(CASE WHEN s.disposition = 'additive' THEN 1 END) AS additive,
+  count(CASE WHEN s.disposition = 'redundant' THEN 1 END) AS redundant,
+  count(CASE WHEN s.disposition = 'contradictory' THEN 1 END) AS contradictory,
+  count(CASE WHEN s.disposition = 'unrelated' THEN 1 END) AS unrelated,
+  count(CASE WHEN s.disposition IS NULL THEN 1 END) AS no_disposition
+RETURN total, resolved, dismissed, under_review, unprocessed,
+  additive, redundant, contradictory, unrelated, no_disposition`,
+    params: sessionId ? { sessionId } : {},
   };
 }

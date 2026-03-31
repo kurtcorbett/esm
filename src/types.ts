@@ -48,6 +48,8 @@ export const RELATIONSHIP_TYPES = [
   "DEFINED_BY",
   "ESCALATED_TO",
   "RELATED_TO",
+  "AFFECTS",
+  "GOVERNED_BY",
 ] as const;
 
 export type RelationshipType = (typeof RELATIONSHIP_TYPES)[number];
@@ -129,6 +131,8 @@ export interface SignalNode extends BaseNode, EmbeddableNode {
   status: "unprocessed" | "needs_classification" | "under_review" | "resolved_into_update" | "dismissed";
   disposition?: "redundant" | "additive" | "contradictory" | "unrelated";
   disposition_note?: string;
+  alternatives?: string;
+  before_state?: string;
 }
 
 export interface DiscrepancyNode extends BaseNode, EmbeddableNode {
@@ -183,6 +187,14 @@ export interface GeneratedByEdgeProps {
 
 export interface RelatedToEdgeProps {
   relationship_description?: string;
+}
+
+export interface AffectsEdgeProps {
+  change_type?: "immediate" | "deferred";
+}
+
+export interface GovernedByEdgeProps {
+  resolution_principle?: string;
 }
 
 // ─── Classification ─────────────────────────────────────────
