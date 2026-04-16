@@ -1,12 +1,16 @@
 // ESM — Environment variable loading
+import { resolve } from "node:path";
 
 export async function loadEnv(): Promise<void> {
   if (Deno.env.get("ESM_ENV_LOADED")) return; // Already loaded
 
-  // Try project-local .env first, then ~/.config/env/esm.env
+  // Resolve repo root from script location (works regardless of cwd)
+  const repoRoot = resolve(import.meta.dirname!, "..");
+
+  // Config directory first (reliable for MCP), then repo-local fallback
   const candidates = [
-    `${Deno.cwd()}/.env`,
     `${Deno.env.get("HOME")}/.config/env/esm.env`,
+    `${repoRoot}/.env`,
   ];
 
   for (const envPath of candidates) {
