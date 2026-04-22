@@ -53,15 +53,20 @@ LLM API (embeddings + metadata extraction)
 # Start local Neo4j
 docker compose up -d
 
-# Configure environment
-cp .env.example .env
-# Edit .env with your LLM API key
+# Configure environment (recommended: system-wide config directory)
+mkdir -p ~/.config/env
+cp .env.example ~/.config/env/esm.env
+# Edit ~/.config/env/esm.env — uncomment Docker lines, add your OpenAI key
 
-# Initialize schema
+# Initialize schema (creates vector indexes + constraints)
 deno task setup
 
-# Start the MCP server
-deno task start
+# Register with Claude Code (use absolute path to your clone)
+claude mcp add esm -- deno run --allow-net --allow-env --allow-read --allow-sys \
+  /absolute/path/to/esm/src/main.ts
+
+# Verify
+claude mcp list   # should show "esm"
 ```
 
 ### Fully Local Setup (Docker + Ollama)
@@ -79,7 +84,12 @@ For a fully self-hosted setup with no external API calls:
    docker compose up -d
    ```
 
-3. Configure `.env`:
+3. Configure environment:
+   ```bash
+   mkdir -p ~/.config/env
+   cp .env.example ~/.config/env/esm.env
+   ```
+   Edit `~/.config/env/esm.env` — uncomment the Docker and Ollama sections:
    ```env
    NEO4J_DB_CONNECTION_URI=bolt://localhost:7687
    NEO4J_DB_USERNAME=neo4j
@@ -91,22 +101,34 @@ For a fully self-hosted setup with no external API calls:
    LLM_COMPLETION_MODEL=llama3.2
    ```
 
-4. Initialize and start:
+4. Initialize and register:
    ```bash
    deno task setup
-   deno task start
+   claude mcp add esm -- deno run --allow-net --allow-env --allow-read --allow-sys \
+     /absolute/path/to/esm/src/main.ts
    ```
 
 ### Cloud Setup (Neo4j Aura + OpenAI/OpenRouter)
 
 1. Create a free [Neo4j Aura](https://neo4j.com/cloud/aura/) instance
-2. Configure `.env`:
+2. Configure environment:
+   ```bash
+   mkdir -p ~/.config/env
+   cp .env.example ~/.config/env/esm.env
+   ```
+   Edit `~/.config/env/esm.env`:
    ```env
    NEO4J_DB_CONNECTION_URI=neo4j+s://xxxx.databases.neo4j.io
    NEO4J_DB_USERNAME=neo4j
    NEO4J_DB_PASSWORD=your-password
    LLM_BASE_URL=https://api.openai.com/v1
    LLM_API_KEY=sk-...
+   ```
+3. Initialize and register:
+   ```bash
+   deno task setup
+   claude mcp add esm -- deno run --allow-net --allow-env --allow-read --allow-sys \
+     /absolute/path/to/esm/src/main.ts
    ```
 
 ## Environment Variables
@@ -122,7 +144,13 @@ For a fully self-hosted setup with no external API calls:
 | `LLM_EMBEDDING_DIMENSIONS` | `1536` | No | Must match your embedding model's output |
 | `LLM_COMPLETION_MODEL` | `gpt-4o-mini` | No | Model for classification and metadata extraction |
 
-Environment variables are loaded from `.env` in the project root, or `~/.config/env/esm.env`.
+Environment is loaded in this order (first found wins):
+
+1. `ESM_ENV_FILE` environment variable (explicit override — useful for multi-instance setups)
+2. `~/.config/env/esm.env` (recommended — works regardless of working directory)
+3. `.env` in repo root (fallback for development)
+
+**Important:** `LLM_EMBEDDING_DIMENSIONS` must exactly match your embedding model's output. Common values: `text-embedding-3-small` = 1536, `nomic-embed-text` (Ollama) = 768. If you change models after setup, drop and recreate indexes (see Troubleshooting).
 
 ## MCP Connection
 
@@ -132,9 +160,11 @@ Environment variables are loaded from `.env` in the project root, or `~/.config/
 claude mcp add esm -- deno run --allow-net --allow-env --allow-read --allow-sys /path/to/esm/src/main.ts
 ```
 
+Verify: `claude mcp list` should show `esm` as available.
+
 ### Claude Desktop
 
-Add to your MCP config:
+Add to your MCP config (location varies by platform — see Claude Desktop docs):
 
 ```json
 {
@@ -146,6 +176,12 @@ Add to your MCP config:
   }
 }
 ```
+
+Restart Claude Desktop after editing. ESM tools appear in the tools menu.
+
+### Verifying the Connection
+
+Once registered, test from Claude Code by asking it to run `stats`. You should get back node/edge counts (all zeros on a fresh install). If you get a connection error, see Troubleshooting below.
 
 ## MCP Tools
 
@@ -480,6 +516,38 @@ src/
   env.ts         — Environment variable loading
   schema.ts      — Schema setup script
 ```
+
+## Troubleshooting
+
+**"Missing NEO4J_DB_CONNECTION_URI"** — Environment file not found. Check that `~/.config/env/esm.env` exists, or set `ESM_ENV_FILE` explicitly:
+```bash
+ESM_ENV_FILE=/path/to/your/.env deno task setup
+```
+
+**"Neo4j connection failed"** — Docker not running or wrong URI. Verify Neo4j is up:
+```bash
+docker compose ps          # should show neo4j running
+docker compose up -d       # restart if needed
+```
+
+**"Embedding request failed (401)"** — Invalid `LLM_API_KEY` or wrong `LLM_BASE_URL`. Verify your API credentials with your provider.
+
+**"Vector index created with wrong dimensions"** — `LLM_EMBEDDING_DIMENSIONS` doesn't match your model. Drop and recreate:
+```bash
+deno run --allow-net --allow-env --allow-read --allow-sys scripts/drop-indexes.ts
+deno task setup
+```
+
+**Claude Code doesn't see ESM tools** — Re-register and verify:
+```bash
+claude mcp remove esm
+claude mcp add esm -- deno run --allow-net --allow-env --allow-read --allow-sys /absolute/path/to/esm/src/main.ts
+claude mcp list
+```
+
+## What's Next
+
+ESM provides the storage layer. For SIA (Strategic Intent Alignment) operational behavior — signal processing pipelines, onboarding sessions, session protocol — see the [SIA Plugins](https://github.com/kurtcorbett/sia-plugins) repo. Its README covers deploying skill files and the session protocol to your projects.
 
 ## License
 
