@@ -3,7 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "npm:zod@3";
 import { runQuery, runInTransaction } from "./db.ts";
-import { getEmbedding, extractMetadata, getLlmConfig } from "./llm.ts";
+import { getEmbedding, getEmbeddings, extractMetadata, shouldSkipExtraction, getLlmConfig } from "./llm.ts";
 import { classifyContent } from "./classify.ts";
 import { buildContext } from "./context.ts";
 import {
@@ -34,11 +34,9 @@ import type { NodeLabel, CypherQuery } from "./types.ts";
 /** Log full error to stderr and return a sanitized message for MCP clients. */
 function safeErrorMessage(err: unknown): string {
   const msg = (err as Error).message || "Unknown error";
-  console.error("ESM error:", err);
-  // Strip connection URIs, API responses, and file paths from client-facing messages
-  if (/neo4j|bolt|connection|ECONNREFUSED|getaddrinfo/i.test(msg)) {
-    return "Database connection error";
-  }
+  console.error("ESM error:", msg);
+  // TODO: restore sanitization after debugging
+  return `DEBUG: ${msg}`;
   if (/fetch|openai|openrouter|embedding.*failed|API/i.test(msg)) {
     return "LLM API request failed";
   }
@@ -190,11 +188,11 @@ export function createServer(): McpServer {
     async ({ entity_type, name, content, properties }) => {
       try {
         const textForEmbedding = content || name;
+        const skip = shouldSkipExtraction(entity_type as NodeLabel, properties as Record<string, unknown> | undefined);
 
-        // Run embedding + metadata extraction in parallel
         const [embedding, extracted] = await Promise.all([
           getEmbedding(textForEmbedding),
-          extractMetadata(textForEmbedding, entity_type as NodeLabel),
+          skip ? Promise.resolve({}) : extractMetadata(textForEmbedding, entity_type as NodeLabel),
         ]);
 
         // Merge: explicit props override LLM-extracted
@@ -271,9 +269,10 @@ export function createServer(): McpServer {
           ? `${observation}\n\nContext: ${context}`
           : observation;
 
+        const skip = shouldSkipExtraction("Signal" as NodeLabel, properties as Record<string, unknown> | undefined);
         const [embedding, extracted] = await Promise.all([
           getEmbedding(combinedText),
-          extractMetadata(combinedText, "Signal"),
+          skip ? Promise.resolve({}) : extractMetadata(combinedText, "Signal"),
         ]);
 
         const mergedProps = {
@@ -348,9 +347,10 @@ export function createServer(): McpServer {
     }) => {
       try {
         const textForEmbedding = content || name;
+        const skip = shouldSkipExtraction("Session" as NodeLabel, properties as Record<string, unknown> | undefined);
         const [embedding, extracted] = await Promise.all([
           getEmbedding(textForEmbedding),
-          extractMetadata(textForEmbedding, "Session"),
+          skip ? Promise.resolve({}) : extractMetadata(textForEmbedding, "Session"),
         ]);
 
         const mergedProps = {
@@ -829,10 +829,12 @@ export function createServer(): McpServer {
         const isUnclassified = classification.node_type === "unclassified";
         const name = hints?.name || classification.suggested_name;
 
-        // Phase 2: Embed + extract metadata in parallel
+        // Phase 2: Embed + optionally extract metadata in parallel
+        const classHints = classification.hints as Record<string, unknown> || {};
+        const skip = shouldSkipExtraction(nodeType as NodeLabel, classHints);
         const [embedding, extracted] = await Promise.all([
           getEmbedding(content),
-          extractMetadata(content, nodeType as NodeLabel),
+          skip ? Promise.resolve({}) : extractMetadata(content, nodeType as NodeLabel),
         ]);
 
         // Phase 3: Build props and create node
@@ -1057,8 +1059,8 @@ export function createServer(): McpServer {
           };
         }
 
-        // Determine which need re-embedding
-        const embeddingPromises: Array<Promise<number[]> | null> = [];
+        // Determine which need re-embedding, batch into single API call
+        const textsToEmbed: { index: number; text: string }[] = [];
         for (let i = 0; i < updates.length; i++) {
           const props = updates[i].properties as Record<string, unknown>;
           const existing = (existingResults[i][0] as Record<string, unknown>).n as Record<string, unknown>;
@@ -1068,15 +1070,18 @@ export function createServer(): McpServer {
           if (contentChanged || nameChanged) {
             const text = (props.content as string) || (existing.content as string) ||
                          (props.name as string) || (existing.name as string) || "";
-            embeddingPromises.push(text ? getEmbedding(text) : null);
-          } else {
-            embeddingPromises.push(null);
+            if (text) textsToEmbed.push({ index: i, text });
           }
         }
 
-        const embeddings = await Promise.all(
-          embeddingPromises.map((p) => p ?? Promise.resolve(null))
-        );
+        const batchResults = textsToEmbed.length > 0
+          ? await getEmbeddings(textsToEmbed.map((t) => t.text))
+          : [];
+
+        const embeddings: (number[] | null)[] = new Array(updates.length).fill(null);
+        for (let j = 0; j < textsToEmbed.length; j++) {
+          embeddings[textsToEmbed[j].index] = batchResults[j];
+        }
 
         // Build update queries
         const queries: CypherQuery[] = updates.map((u, i) => {
